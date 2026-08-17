@@ -18,7 +18,7 @@
 export const MODULOS = [
   {
     chave: "eventos",
-    tipo: "iframe",
+    tipo: "link-externo",
     url: import.meta.env.VITE_URL_EVENTOS || null,
     icone: "CalendarDays",
   },
