@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
 const AuthContext = createContext(null);
@@ -8,6 +8,7 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [acessos, setAcessos] = useState([]); // [{ setor_chave, papel }]
+  const usuarioCarregadoRef = useRef(null); // id do usuário cujo perfil/acessos já estão carregados
 
   const carregarPerfilEAcessos = useCallback(async (userId) => {
     const [{ data: perfilData }, { data: acessosData }] = await Promise.all([
@@ -16,26 +17,49 @@ export function AuthProvider({ children }) {
     ]);
     setProfile(perfilData || null);
     setAcessos(acessosData || []);
+    usuarioCarregadoRef.current = userId;
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
-  }, []);
+    let ativo = true;
 
-  useEffect(() => {
     (async () => {
-      setLoading(true);
-      if (session?.user) {
-        await carregarPerfilEAcessos(session.user.id);
-      } else {
-        setProfile(null);
-        setAcessos([]);
-      }
+      const { data } = await supabase.auth.getSession();
+      if (!ativo) return;
+      setSession(data.session);
+      if (data.session?.user) await carregarPerfilEAcessos(data.session.user.id);
       setLoading(false);
     })();
-  }, [session, carregarPerfilEAcessos]);
+
+    // IMPORTANTE: onAuthStateChange dispara não só em login/logout, mas
+    // também sempre que o Supabase revalida o token em segundo plano —
+    // o que acontece toda vez que a aba do navegador volta a ficar
+    // visível. Se tratássemos todo evento como "sessão nova" (voltando a
+    // marcar loading=true e recarregando perfil/acessos do zero), a
+    // interface toda re-renderizaria a cada troca de aba, derrubando
+    // qualquer formulário aberto no meio do preenchimento. Por isso, só
+    // refazemos a carga completa quando o usuário logado realmente muda;
+    // um refresh de token do mesmo usuário só atualiza a sessão em
+    // segundo plano, sem mexer no resto.
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, novaSessao) => {
+      if (!ativo) return;
+      setSession(novaSessao);
+      const novoUserId = novaSessao?.user?.id || null;
+      if (novoUserId === usuarioCarregadoRef.current) return; // mesmo usuário: refresh silencioso, nada a recarregar
+      if (!novoUserId) {
+        usuarioCarregadoRef.current = null;
+        setProfile(null);
+        setAcessos([]);
+        return;
+      }
+      await carregarPerfilEAcessos(novoUserId);
+    });
+
+    return () => {
+      ativo = false;
+      sub.subscription.unsubscribe();
+    };
+  }, [carregarPerfilEAcessos]);
 
   const logout = useCallback(async () => {
     await supabase.auth.signOut();
